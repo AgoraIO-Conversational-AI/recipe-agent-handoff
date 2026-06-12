@@ -1,8 +1,8 @@
-# Architecture — Tool Calling Recipe
+# Architecture — Agent Handoff Recipe
 
-Three processes. The browser talks only to Next.js `/api/*`, which rewrites to the
-agent backend. The agent backend owns Agora tokens and agent lifecycle. The
-tool-calling LLM endpoint is a separate service that **Agora cloud** calls directly.
+Three processes. The browser talks only to Next.js `/api/*`, which rewrites to
+the agent backend. The agent backend owns Agora tokens and agent lifecycle. The
+concierge LLM endpoint is a separate service that **Agora cloud** calls directly.
 
 ## Request flow
 
@@ -20,8 +20,10 @@ Agora ConvoAI Cloud
   │  user speech → Deepgram STT (managed)
   │  POST <CUSTOM_LLM_URL>/chat/completions   (Authorization: Bearer <key>)
   ▼
-Tool-calling LLM endpoint (llm/, :8001, public via tunnel)
-  │  runs internal tool loop; returns OpenAI SSE (spoken text only)
+Concierge LLM endpoint (llm/, :8001, public via tunnel)
+  │  derives persona (Triage / Booking / Trip Support)
+  │  runs persona handler; reads/writes SQLite itinerary.db
+  │  returns OpenAI SSE (spoken text only — no tool_call chunks)
   ▼
 Agora ConvoAI Cloud → MiniMax TTS (managed) → user hears speech
                      → RTM transcript / metrics → web UI
@@ -29,32 +31,41 @@ Agora ConvoAI Cloud → MiniMax TTS (managed) → user hears speech
 
 `POST /api/stopAgent { agentId }` ends the session.
 
-## Where the tool runs
+## The persona handoff FSM
 
-In this recipe the tool calls are handled entirely inside the `llm/` endpoint,
-which owns a small SQLite message log. `run_agent_turn()` detects the user's
-intent and executes one of two tools internally — `log_message()` to persist a
-note, or `list_messages()` to read recent notes back (recall is checked before
-logging, so "what have I noted" reads back instead of saving). Only the final
-spoken reply is streamed; Agora cloud never sees a `tool_call` chunk. Because the
-notes live in SQLite, they survive an endpoint restart.
+The `llm/` endpoint implements a 3-persona FSM. On every turn, `derive_persona()`
+inspects two signals:
 
-This is distinct from an MCP-orchestrated approach, where Agora cloud would invoke
-a separate MCP server to run tools. That pattern is a separate recipe
-(`recipe-agent-mcp`), not built here.
+1. **SQLite itinerary state** — if a row exists in `itinerary`, the persona is
+   `trip_support` regardless of what the user says.
+2. **Intent keywords** — if the user text contains a booking keyword ("book",
+   "flight", "travel", …) the persona is `booking`.
+3. Otherwise the persona is `triage`.
+
+There is **no session id** and **no stored persona field** — the active persona
+is always derived fresh from DB state + intent. This makes the FSM transparent,
+testable, and restart-safe.
+
+### Persona handlers
+
+| Persona | Trigger | What it does |
+| --- | --- | --- |
+| `triage` | No booking, no booking keywords | Greets and asks for destination |
+| `booking` | No booking, keyword detected | Searches flights or books a slot; stores booking in SQLite |
+| `trip_support` | Booking exists in SQLite | Shows, modifies, or cancels the trip |
+
+A pending destination is cached in a `context` table between turns so the user
+can say "I want to go to Paris" and then "book the cheapest" as separate turns.
 
 ## Why two backends
 
 `server/` and `llm/` are split because of an **exposure asymmetry**:
 
 - `llm/` must be reachable by **Agora cloud over the public internet** (hence the
-  ngrok tunnel). It is the part you replace with your own model and tool registry,
-  and it has no Agora dependency.
+  ngrok tunnel). It is the component you replace with your own model in production.
+  It has no Agora SDK dependency.
 - `server/` only needs to be reachable by your web tier. It holds the Agora App
   Certificate and all token logic.
-
-In production the two could be co-deployed, but they are kept separate here to
-make that boundary — and the public-exposure requirement — explicit.
 
 ## API (agent backend, port 8000)
 
@@ -71,5 +82,5 @@ The browser calls these as `/api/*`; Next rewrites them to `AGENT_BACKEND_URL`.
 - Browser → agent backend: none (local dev).
 - Agent backend → Agora cloud: Token007, generated from `AGORA_APP_ID` +
   `AGORA_APP_CERTIFICATE`.
-- Agora cloud → tool-calling LLM endpoint: `Authorization: Bearer <CUSTOM_LLM_API_KEY>`.
+- Agora cloud → concierge LLM endpoint: `Authorization: Bearer <CUSTOM_LLM_API_KEY>`.
   The mock endpoint does not validate it; a production endpoint should.

@@ -1,15 +1,15 @@
-# Agora Agent Backend — Tool Calling Recipe
+# Agora Agent Backend — Agent Handoff Recipe
 
 FastAPI service that owns Agora token generation and agent session lifecycle for
-the tool-calling recipe. It is the service the web client reaches through the
-Next.js `/api/*` rewrite proxy (port 8000).
+the handoff recipe. It is the service the web client reaches through the Next.js
+`/api/*` rewrite proxy (port 8000).
 
 ## What's different from the base quickstart
 
 The LLM stage uses the SDK's `CustomLLM` vendor instead of a managed
 `OpenAI(model="gpt-4o-mini")`. It points the agent at your own OpenAI-compatible
-endpoint (the `llm/` server in this repo) via `CUSTOM_LLM_URL`. STT (Deepgram)
-and TTS (MiniMax) remain Agora-managed.
+concierge endpoint (the `llm/` server in this repo) via `CUSTOM_LLM_URL`. STT
+(Deepgram) and TTS (MiniMax) remain Agora-managed.
 
 ## Run
 
@@ -34,8 +34,8 @@ python src/server.py
 - `CUSTOM_LLM_API_KEY` — forwarded by Agora cloud as `Authorization: Bearer`.
   Required by the `CustomLLM` vendor.
 
-Optional: `CUSTOM_LLM_MODEL` (default `tool-mock`), `AGENT_GREETING`, `PORT`
-(default `8000`).
+Optional: `CUSTOM_LLM_MODEL` (default `handoff-mock`), `AGENT_GREETING`,
+`PORT` (default `8000`).
 
 ## API
 
