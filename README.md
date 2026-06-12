@@ -73,6 +73,14 @@ Deploy `web` (Next.js), `server` (a reachable FastAPI backend), and `llm` (a
 publicly reachable FastAPI endpoint). Set `AGENT_BACKEND_URL` in the web
 deployment so Next rewrites reach the backend.
 
+A multi-process Docker image is published to
+`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-handoff` on `v*` tags. It
+bundles the agent backend (:8000) **and** the mock LLM endpoint (:8001) in one
+image (MULTI-PROCESS). To host the single-image demo, expose :8001 publicly and
+point `CUSTOM_LLM_URL` at it. A local `docker run` still needs a tunnel, because
+Agora cloud cannot reach `localhost`. The bundled mock is a development stand-in
+you replace with your own model in production.
+
 ## Environment variables
 
 Backend env file: [`server/.env.example`](server/.env.example).
@@ -105,7 +113,7 @@ bun run clean            # remove venvs and build artifacts
 ```
 
 Tests run standalone (no Agora cloud needed): `pytest` in `llm/`, plus
-`bun run verify` in `web/`.
+`bun run verify` in `web/`. CI runs them on Linux/macOS/Windows × Python 3.10 & 3.13.
 
 ## Architecture
 
@@ -133,10 +141,13 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for full detail.
   ever calls `/api/*`.
 - A **FastAPI** agent backend (:8000) that owns Agora token generation and the
   agent session lifecycle.
-- A **3-persona handoff FSM** — Triage, Booking, Trip Support — with persona
-  derived at every turn from intent keywords + SQLite itinerary state.
+- The `/api/get_config` · `/api/startAgent` · `/api/stopAgent` contract between
+  the web client and the backend (Next rewrites, no Route Handlers).
+- A **3-persona handoff** — Triage → Booking → Trip Support — with persona derived
+  at every turn from intent keywords + SQLite itinerary DB state.
 - Deterministic flight options (Paris, Tokyo, Rome) and `_match_choice` for slot
   selection ("the morning one", "the cheapest").
+- **SQLite + recall**: the booked itinerary persists across restarts.
 - A **zero-key mock** LLM endpoint so the full pipeline runs with no LLM API key.
 
 ## How It Works

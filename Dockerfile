@@ -16,8 +16,8 @@ COPY --chown=app:app llm/src /app/llm/src
 COPY --chown=app:app docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# The mock writes its SQLite log here (writable by the non-root user).
-ENV MESSAGE_DB_PATH=/tmp/messages.db
+# The mock writes its SQLite itinerary here (writable by the non-root user).
+ENV ITINERARY_DB_PATH=/tmp/itinerary.db
 
 USER app
 
