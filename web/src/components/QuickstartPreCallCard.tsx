@@ -24,11 +24,10 @@ export function QuickstartPreCallCard({
 			}}
 		>
 			<h1 className="text-[28px] font-medium leading-[1.2] text-white">
-				Tool Calling Recipe
+				Travel Concierge
 			</h1>
 			<p className="mt-[14px] text-sm font-medium leading-6 text-muted-foreground">
-				A voice agent that calls a tool. The tool runs inside your own
-				OpenAI-compatible endpoint and the agent speaks the result.
+				Ask to book a trip — you'll be handed from triage to booking to trip support.
 			</p>
 
 			<Button

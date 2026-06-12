@@ -15,9 +15,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-	title: "Tool Calling Recipe | Agora Conversational AI",
+	title: "Handoff Recipe | Agora Conversational AI",
 	description:
-		"Recipe: a voice agent that calls a tool, with execution inside your own OpenAI-compatible endpoint.",
+		"Recipe: a travel concierge voice agent that transitions through Triage, Booking, and Trip Support personas based on intent and itinerary state.",
 	icons: {
 		icon: [
 			{ url: "/favicon.ico" },

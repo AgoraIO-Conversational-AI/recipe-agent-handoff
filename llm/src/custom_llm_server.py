@@ -1,5 +1,5 @@
 """
-Tool-Calling LLM Server — Mock Implementation
+Travel Concierge Handoff LLM Server — Mock Implementation
 
 This server demonstrates how to implement an OpenAI-compatible Chat Completions
 endpoint that works with Agora Conversational AI Engine.
@@ -10,14 +10,16 @@ Key points:
 - Must follow OpenAI Chat Completions response format
 - Agora cloud sends Authorization header with the api_key you configured
 
-This mock version returns pre-defined responses so you can test the full
-voice pipeline (STT → Custom LLM → TTS) without any external LLM dependency.
+This mock implements a 3-persona handoff FSM for a travel concierge:
+  Triage → Booking → Trip Support
+Persona is derived at each turn from the user's intent and the SQLite itinerary
+state — no session id, no stored persona field. Zero external LLM key needed.
 
 Replace the mock logic with your own:
 - Call your own model (local or remote)
-- Add RAG context injection
-- Implement tool calling
-- Route to different models based on content
+- Persist itinerary to a real database
+- Add multi-destination support
+- Route to different models per persona
 """
 import asyncio
 import json
@@ -47,10 +49,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Tool-Calling LLM Server (Mock)",
+    title="Travel Concierge Handoff LLM Server (Mock)",
     description=(
         "OpenAI-compatible Chat Completions endpoint for Agora Conversational AI Engine. "
-        "This mock implementation demonstrates tool calling via an internal log_message tool."
+        "This mock implements a 3-persona Travel Concierge Handoff FSM (Triage → Booking → "
+        "Trip Support) derived from intent and SQLite itinerary state. Zero external key needed."
     ),
     version="1.0.0",
 )
@@ -108,64 +111,74 @@ class ChatCompletionRequest(BaseModel):
 
 
 # =============================================================================
-# Tool logic (mock, zero-key) — internal orchestration over SQLite
+# Persona handoff logic (mock, zero-key) — 3-persona FSM over SQLite itinerary
 # -----------------------------------------------------------------------------
-# Two tools execute HERE, inside the endpoint, which owns a SQLite message log:
-#   log_message(conn, text)  — persist a note
-#   list_messages(conn)      — read recent notes back
-# run_agent_turn() routes by keyword and streams only the final answer; Agora
-# cloud never sees a tool_call. A real endpoint would run the OpenAI tool-call
-# loop against your model instead of this heuristic.
+# Personas: triage → booking → trip_support
+# Persona is DERIVED each turn from intent keywords + booked-trip DB state.
+# No session id, no stored persona field.
+# run_agent_turn() executes the right persona handler and returns only the final
+# spoken reply; Agora cloud never sees a tool_call.
 # =============================================================================
 
-DB_PATH = os.getenv("MESSAGE_DB_PATH") or os.path.join(_base_dir, "messages.db")
+DB_PATH = os.getenv("ITINERARY_DB_PATH") or os.path.join(_base_dir, "itinerary.db")
 
-_LOG_TRIGGERS = ("log", "print", "note", "record", "console")
-# Recall is checked BEFORE logging so "what have I noted" reads back instead of
-# logging a new note. Keep these phrases distinct from everyday note text; this
-# is a keyword mock, so an utterance that mixes both (e.g. logging the word
-# "list") may route to recall — a real model would decide.
-_RECALL_TRIGGERS = (
-    "list", "read back", "remind me", "what have i", "what i have",
-    "what did i", "show me my", "my notes",
-)
+OPTIONS = {
+    "paris": [(1, "morning", 420), (2, "midday", 480), (3, "evening", 390)],
+    "tokyo": [(1, "morning", 910), (2, "midday", 870), (3, "evening", 940)],
+    "rome":  [(1, "morning", 360), (2, "midday", 410), (3, "evening", 330)],
+}
+DESTINATIONS = tuple(OPTIONS.keys())
+
+_BOOK_KW = ("book", "flight", "trip", "travel", "fly", "go to", "vacation", "holiday")
+_RECALL_KW = ("itinerary", "my trip", "my booking", "what did i book", "what's booked")
+_CANCEL_KW = ("cancel", "scrap", "delete my")
+_MODIFY_KW = ("change", "modify", "reschedule", "move my")
+_CHOICE_ORD = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2}
 
 
 def get_db(path: str = DB_PATH) -> "sqlite3.Connection":
-    # check_same_thread=False: a fresh connection is created and used per request;
-    # this keeps it safe if the sync DB work is ever moved to a threadpool.
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS messages (
+        """CREATE TABLE IF NOT EXISTS itinerary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            text TEXT NOT NULL,
-            created_at REAL NOT NULL
+            destination TEXT NOT NULL, slot TEXT NOT NULL,
+            price INTEGER NOT NULL, created_at REAL NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS context (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )"""
     )
     conn.commit()
     return conn
 
 
-def log_message(conn: "sqlite3.Connection", text: str) -> str:
-    """Tool: persist a message and return a confirmation."""
+def _booked(conn) -> Optional[tuple]:
+    return conn.execute(
+        "SELECT destination, slot, price FROM itinerary ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def _set_context(conn, key: str, value: str) -> None:
     conn.execute(
-        "INSERT INTO messages (text, created_at) VALUES (?, ?)", (text, time.time())
+        "INSERT OR REPLACE INTO context (key, value) VALUES (?, ?)", (key, value)
     )
     conn.commit()
-    logger.info("TOOL log_message recorded: %s", text)
-    return f'Logged your message: "{text}".'
 
 
-def list_messages(conn: "sqlite3.Connection") -> str:
-    """Tool: read back the most recent logged messages."""
-    rows = conn.execute(
-        "SELECT text FROM messages ORDER BY created_at DESC, id DESC LIMIT 10"
-    ).fetchall()
-    if not rows:
-        return "You haven't logged any messages yet."
-    items = "; ".join(row[0] for row in rows)
-    plural = "s" if len(rows) != 1 else ""
-    return f"You have {len(rows)} logged message{plural}: {items}."
+def _get_context(conn, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM context WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def derive_persona(conn, user_text: str) -> str:
+    if _booked(conn):
+        return "trip_support"
+    if any(k in user_text.lower() for k in _BOOK_KW):
+        return "booking"
+    return "triage"
 
 
 def _extract_last_user_text(messages: list) -> str:
@@ -184,27 +197,109 @@ def _extract_last_user_text(messages: list) -> str:
     return ""
 
 
-def _message_to_log(user_text: str) -> str:
-    if ":" in user_text:
-        tail = user_text.split(":", 1)[1].strip()
-        if tail:
-            return tail
-    return user_text.strip()
+def _find_destination(messages: list, conn=None) -> Optional[str]:
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) == "user":
+            text = _extract_last_user_text([msg]).lower()
+            for dest in DESTINATIONS:
+                if dest in text:
+                    return dest
+    if conn is not None:
+        return _get_context(conn, "pending_dest")
+    return None
+
+
+def _match_choice(text: str, opts: list) -> Optional[tuple]:
+    low = text.lower()
+    for word, idx in _CHOICE_ORD.items():
+        if word in low and idx < len(opts):
+            return opts[idx]
+    for opt in opts:
+        if opt[1] in low:
+            return opt
+    if "cheapest" in low:
+        return min(opts, key=lambda o: o[2])
+    if "earliest" in low or "morning" in low:
+        return opts[0]
+    return None
+
+
+def search_trips(dest: str) -> str:
+    opts = OPTIONS[dest]
+    listing = ", ".join(f"{slot} for ${price}" for _id, slot, price in opts)
+    return (f"Here are flights to {dest.title()}: {listing}. "
+            "Which would you like — say the time or 'the cheapest'?")
+
+
+def book_trip(conn, dest: str, choice_text: str) -> str:
+    pick = _match_choice(choice_text, OPTIONS[dest])
+    if not pick:
+        return ("Which option would you like? You can say a time like 'the morning "
+                "one' or 'the cheapest'.")
+    conn.execute(
+        "INSERT INTO itinerary (destination, slot, price, created_at) VALUES (?,?,?,?)",
+        (dest, pick[1], pick[2], time.time()),
+    )
+    conn.commit()
+    return (f"Booked your {pick[1]} flight to {dest.title()} for ${pick[2]}. "
+            "I'm handing you to trip support — ask me to show, change, or cancel it.")
+
+
+def get_itinerary(conn) -> str:
+    row = _booked(conn)
+    if not row:
+        return "You don't have a trip booked yet. Tell me where you'd like to go."
+    return f"Your itinerary: {row[1]} flight to {row[0].title()} for ${row[2]}."
+
+
+def cancel_booking(conn) -> str:
+    conn.execute("DELETE FROM itinerary")
+    conn.commit()
+    return "Your trip is cancelled. Anything else — I can help you book a new one."
+
+
+def modify_booking(conn, text: str) -> str:
+    row = _booked(conn)
+    if not row:
+        return "There's no trip to change yet."
+    pick = _match_choice(text, OPTIONS[row[0]])
+    if not pick:
+        return f"Your current trip is the {row[1]} flight to {row[0].title()}. Which time would you like instead?"
+    conn.execute("DELETE FROM itinerary")
+    conn.execute(
+        "INSERT INTO itinerary (destination, slot, price, created_at) VALUES (?,?,?,?)",
+        (row[0], pick[1], pick[2], time.time()),
+    )
+    conn.commit()
+    return f"Updated your {row[0].title()} trip to the {pick[1]} flight for ${pick[2]}."
 
 
 def run_agent_turn(conn: "sqlite3.Connection", messages: list) -> str:
-    """Route the turn to a tool (recall or log) and return the final text."""
+    """Route the turn to the active persona and return the spoken reply."""
     user_text = _extract_last_user_text(messages)
-    lowered = user_text.lower()
-    if any(trigger in lowered for trigger in _RECALL_TRIGGERS):
-        return list_messages(conn)
-    if any(trigger in lowered for trigger in _LOG_TRIGGERS):
-        confirmation = log_message(conn, _message_to_log(user_text))
-        return f"{confirmation} Anything else you'd like me to note?"
-    return (
-        "I'm a voice assistant that can log messages and read them back. Say "
-        "'log this: buy milk' to save one, or 'list my notes' to hear them."
-    )
+    low = user_text.lower()
+    persona = derive_persona(conn, user_text)
+    if persona == "trip_support":
+        if any(k in low for k in _CANCEL_KW):
+            return cancel_booking(conn)
+        if any(k in low for k in _MODIFY_KW):
+            return modify_booking(conn, user_text)
+        if any(k in low for k in _RECALL_KW):
+            return get_itinerary(conn)
+        return get_itinerary(conn) + " I can change or cancel it for you."
+    if any(k in low for k in _RECALL_KW):
+        return get_itinerary(conn)
+    if persona == "booking":
+        dest = _find_destination(messages, conn)
+        if dest:
+            _set_context(conn, "pending_dest", dest)
+            if _match_choice(user_text, OPTIONS[dest]):
+                return book_trip(conn, dest, user_text)
+            return search_trips(dest)
+        return ("Welcome to booking! Where would you like to fly — I can search Paris, "
+                "Tokyo, or Rome.")
+    return ("Hi, I'm your travel concierge. Tell me where you'd like to go and I'll "
+            "connect you to booking.")
 
 
 # =============================================================================
@@ -311,12 +406,12 @@ async def chat_completions(
 @app.get("/health")
 async def health():
     """Health check."""
-    return {"status": "ok", "service": "custom-llm-mock"}
+    return {"status": "ok", "service": "handoff-mock"}
 
 
 if __name__ == "__main__":
     port = int(os.getenv("CUSTOM_LLM_PORT", "8001"))
-    logger.info(f"Starting Tool-Calling LLM Server (Mock) on port {port}")
+    logger.info(f"Starting Travel Concierge Handoff LLM Server (Mock) on port {port}")
     logger.info("This server returns mock responses — no LLM API key needed.")
     logger.info(f"Endpoint: http://0.0.0.0:{port}/chat/completions")
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -1,11 +1,13 @@
 """
-Agent — Tool Calling Recipe
+Agent — Travel Concierge Handoff Recipe
 
 High-level API for managing Agora Conversational AI Agents with a Custom LLM.
 
 Instead of using the built-in OpenAI vendor, this recipe configures the agent
 to use a custom LLM endpoint (your own proxy server) that is compatible with
-the OpenAI Chat Completions API format.
+the OpenAI Chat Completions API format. The LLM mock implements a 3-persona
+handoff FSM (Triage → Booking → Trip Support) derived from intent and SQLite
+itinerary state — no session id, no stored persona field.
 """
 import logging
 import os
@@ -18,12 +20,12 @@ from agora_agent.agentkit.vendors import CustomLLM, DeepgramSTT, MiniMaxTTS
 
 logger = logging.getLogger("uvicorn.error")
 
-CUSTOM_LLM_PROMPT = """You are a helpful voice assistant connected to Agora's \
-Conversational AI Engine. You can log short messages for the user and read them \
-back. When the user asks you to log, note, or record something, call the \
-log_message tool with the text; when they ask what they've noted or to list \
-their notes, call list_messages. Then confirm. Keep replies to one or two \
-sentences."""
+CUSTOM_LLM_PROMPT = """You are a friendly travel concierge connected to Agora's \
+Conversational AI Engine. Your role shifts as the user progresses: first you \
+greet and understand where they want to go (Triage), then you search flights and \
+book (Booking), then you manage the booked trip (Trip Support). Keep replies \
+short — one or two sentences — suitable for voice. Do not mention internal \
+persona names to the user."""
 
 
 class Agent:
@@ -45,7 +47,7 @@ class Agent:
         self.app_certificate = os.getenv("AGORA_APP_CERTIFICATE")
         self.greeting = os.getenv(
             "AGENT_GREETING",
-            "Hi! I'm your voice assistant — I can log quick notes and read them back. What should I remember?",
+            "Hi! I'm your travel concierge. Where would you like to go?",
         )
 
         # Custom LLM configuration.
@@ -56,7 +58,7 @@ class Agent:
         # agent "start" while its LLM calls silently fail cloud-side.
         self.custom_llm_url = os.getenv("CUSTOM_LLM_URL")
         self.custom_llm_api_key = os.getenv("CUSTOM_LLM_API_KEY", "any-key-here")
-        self.custom_llm_model = os.getenv("CUSTOM_LLM_MODEL", "tool-mock")
+        self.custom_llm_model = os.getenv("CUSTOM_LLM_MODEL", "handoff-mock")
 
         if not self.app_id or not self.app_certificate:
             raise ValueError("AGORA_APP_ID and AGORA_APP_CERTIFICATE are required")
@@ -160,7 +162,7 @@ class Agent:
                     },
                 },
             },
-            advanced_features={"enable_rtm": True, "enable_tools": True},
+            advanced_features={"enable_rtm": True},
             parameters=parameters,
         )
 
@@ -182,7 +184,7 @@ class Agent:
         )
 
         logger.info(
-            "Starting Custom LLM agent channel=%s agent_uid=%s user_uid=%s llm_url=%s",
+            "Starting concierge handoff agent channel=%s agent_uid=%s user_uid=%s llm_url=%s",
             channel_name,
             agent_uid,
             user_uid,
@@ -204,7 +206,7 @@ class Agent:
         self._sessions[agent_id] = session
 
         logger.info(
-            "Started Custom LLM agent agent_id=%s channel=%s",
+            "Started concierge handoff agent agent_id=%s channel=%s",
             agent_id,
             channel_name,
         )
