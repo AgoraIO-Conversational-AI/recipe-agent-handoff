@@ -410,7 +410,7 @@ async def health():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("CUSTOM_LLM_PORT", "8001"))
+    port = int(os.getenv("PORT", "8000"))
     logger.info(f"Starting Travel Concierge Handoff LLM Server (Mock) on port {port}")
     logger.info("This server returns mock responses — no LLM API key needed.")
     logger.info(f"Endpoint: http://0.0.0.0:{port}/chat/completions")

@@ -46,14 +46,13 @@ jobs:
         run: |
           IMAGE=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
           echo "Smoke-testing $IMAGE"
-          docker run -d --name smoke -p 8000:8000 -p 8001:8001 \
+          docker run -d --name smoke -p 8000:8000 \
             -e AGORA_APP_ID=0123456789abcdef0123456789abcdef \
             -e AGORA_APP_CERTIFICATE=fedcba9876543210fedcba9876543210 \
-            -e CUSTOM_LLM_URL=http://localhost:8001/chat/completions \
+            -e CUSTOM_LLM_URL=http://localhost:8000/llm/chat/completions \
             -e CUSTOM_LLM_API_KEY=ci \
             "$IMAGE"
-          fail=0
-          ok=""
+          fail=0; ok=""
           for i in $(seq 1 40); do
             if curl -fsS http://localhost:8000/get_config -o /dev/null; then ok=1; echo "OK get_config"; break; fi
             sleep 1
@@ -61,10 +60,10 @@ jobs:
           [ -z "$ok" ] && { echo "FAIL get_config"; fail=1; }
           ok=""
           for i in $(seq 1 20); do
-            if curl -fsS http://localhost:8001/health -o /dev/null; then ok=1; echo "OK mock /health"; break; fi
+            if curl -fsS http://localhost:8000/llm/health -o /dev/null; then ok=1; echo "OK /llm mounted"; break; fi
             sleep 1
           done
-          [ -z "$ok" ] && { echo "FAIL mock /health"; fail=1; }
+          [ -z "$ok" ] && { echo "FAIL /llm/health"; fail=1; }
           [ "$fail" -ne 0 ] && docker logs smoke
           docker rm -f smoke
           exit $fail
