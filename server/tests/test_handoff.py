@@ -1,6 +1,6 @@
 import os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-import custom_llm_server as s  # noqa: E402
+import llm as s  # noqa: E402
 
 
 def _u(text):
